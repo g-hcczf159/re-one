@@ -315,6 +315,12 @@
 			var gamestart = 0;//游戏是否开始
 			var ttimer = 0;//游戏计时器
 			var durtime = 0;//游戏耗时记录
+			var scale = 1;
+			var offsetX = 0;
+			var offsetY = 0;
+			var startX = 0;
+			var startY = 0;
+			var lastDistance = 0;
 			g_init();
 			//初始化
 			function g_init() {
@@ -358,6 +364,14 @@
 					}
 				}
 				initTouchEvents();
+				
+				// 重置缩放和位移
+				scale = 1;
+				offsetX = 0;
+				offsetY = 0;
+				
+				// 重绘整个画布
+				redrawCanvas();
 			}
 
 			function select_lev(lv) {//选择游戏等级
@@ -522,9 +536,8 @@
 			function openBlock(ev) {
 				if (over) return;
 				
-				//获取正确坐标
-				let x = ~~(ev.offsetX / gblock.width);
-				let y = ~~(ev.offsetY / gblock.width);
+				let x = ~~((ev.offsetX / scale) / gblock.width);
+				let y = ~~((ev.offsetY / scale) / gblock.width);
 				let xy = x + '-' + y;
 				
 				// 第一次点击
@@ -597,16 +610,14 @@
 			}
 
 			function markMine(ev) {//右键标注雷块
-				//禁用右键的浏览器默认菜单:阻止默认动作
 				ev.preventDefault();
 				if (over) return;
 				if (gamestart == 0) {
 					gamestart = 1;
 					startTimer();
 				}
-				//获取正确坐标
-				let x = ~~(ev.offsetX / gblock.width);
-				let y = ~~(ev.offsetY / gblock.width);
+				let x = ~~((ev.offsetX / scale) / gblock.width);
+				let y = ~~((ev.offsetY / scale) / gblock.width);
 				let xy = x + '-' + y;
 				if (g_info[xy].open == 0) {//如果是未打开块, 标注雷-1
 					g_info[xy].open = -1;
@@ -629,71 +640,134 @@
 
 			function initTouchEvents() {
 				let touchStartTime = 0;
-				let touchTimeout;
 				let lastTap = 0;
+				let isPanning = false;
 				
 				canv.addEventListener('touchstart', function(e) {
 					e.preventDefault();
 					touchStartTime = Date.now();
 					
-					const touch = e.touches[0];
-					const x = ~~(touch.pageX - canv.offsetLeft) / gblock.width;
-					const y = ~~(touch.pageY - canv.offsetTop) / gblock.width;
-					const xy = x + '-' + y;
+					if (e.touches.length === 1) {
+						// 单指触摸 - 准备移动或点击
+						isPanning = true;
+						startX = e.touches[0].pageX - offsetX;
+						startY = e.touches[0].pageY - offsetY;
+					} else if (e.touches.length === 2) {
+						// 双指触摸 - 准备缩放
+						isPanning = false;
+						const touch1 = e.touches[0];
+						const touch2 = e.touches[1];
+						lastDistance = Math.hypot(
+							touch2.pageX - touch1.pageX,
+							touch2.pageY - touch1.pageY
+						);
+					}
+				});
+
+				canv.addEventListener('touchmove', function(e) {
+					e.preventDefault();
 					
-					// 模拟鼠标按下高亮效果
-					if (g_info[xy] && g_info[xy].open == 1) {
-						getAround(xy).forEach(n => {
-							if (g_info[n].open == 0) {
-								drawBlock(n, g_color.highlight);
-							}
-						});
+					if (e.touches.length === 1 && isPanning) {
+						// 单指移动 - 平移画布
+						const touch = e.touches[0];
+						offsetX = touch.pageX - startX;
+						offsetY = touch.pageY - startY;
+						redrawCanvas();
+					} else if (e.touches.length === 2) {
+						// 双指移动 - 缩放画布
+						const touch1 = e.touches[0];
+						const touch2 = e.touches[1];
+						const distance = Math.hypot(
+							touch2.pageX - touch1.pageX,
+							touch2.pageY - touch1.pageY
+						);
+						
+						if (lastDistance > 0) {
+							const delta = distance - lastDistance;
+							scale = Math.max(0.5, Math.min(3, scale * (1 + delta / 200)));
+							redrawCanvas();
+						}
+						lastDistance = distance;
 					}
 				});
 
 				canv.addEventListener('touchend', function(e) {
-					e.preventDefault();
 					const touchDuration = Date.now() - touchStartTime;
-					const touch = e.changedTouches[0];
-					const x = ~~(touch.pageX - canv.offsetLeft) / gblock.width;
-					const y = ~~(touch.pageY - canv.offsetTop) / gblock.width;
-					const xy = x + '-' + y;
+					
+					if (e.touches.length === 0 && touchDuration < 200 && !isPanning) {
+						// 快速点击 - 处理游戏操作
+						const touch = e.changedTouches[0];
+						const rect = canv.getBoundingClientRect();
+						const x = (touch.clientX - rect.left - offsetX) / scale;
+						const y = (touch.clientY - rect.top - offsetY) / scale;
+						
+						// 检测双击
+						const currentTime = Date.now();
+						const tapLength = currentTime - lastTap;
+						lastTap = currentTime;
 
-					// 检测双击
-					const currentTime = Date.now();
-					const tapLength = currentTime - lastTap;
-					lastTap = currentTime;
-
-					if (tapLength < 500) {
-						// 双击 - 模拟右键标记
-						markMine({
-							preventDefault: () => {},
-							offsetX: x * gblock.width,
-							offsetY: y * gblock.width
-						});
-					} else if (touchDuration < 500) {
-						// 短按 - 模拟左键点击
-						openBlock({
-							offsetX: x * gblock.width,
-							offsetY: y * gblock.width
-						});
-					} else {
-						// 长按 - 模拟右键标记
-						markMine({
-							preventDefault: () => {},
-							offsetX: x * gblock.width,
-							offsetY: y * gblock.width
-						});
+						if (tapLength < 500) {
+							// 双击 - 标记地雷
+							markMine({
+								preventDefault: () => {},
+								offsetX: x,
+								offsetY: y
+							});
+						} else {
+							// 单击 - 打开格子
+							openBlock({
+								offsetX: x,
+								offsetY: y
+							});
+						}
 					}
+					
+					isPanning = false;
+					lastDistance = 0;
+				});
 
-					// 取消高亮效果
-					if (g_info[xy] && g_info[xy].open == 1) {
-						supGame({
-							offsetX: x * gblock.width,
-							offsetY: y * gblock.width
-						});
+				// 添加双指缩放手势支持
+				canv.addEventListener('gesturestart', function(e) {
+					e.preventDefault();
+				});
+
+				canv.addEventListener('gesturechange', function(e) {
+					e.preventDefault();
+				});
+
+				canv.addEventListener('gestureend', function(e) {
+					e.preventDefault();
+				});
+			}
+
+			function redrawCanvas() {
+				ctx.save();
+				ctx.clearRect(0, 0, canv.width, canv.height);
+				ctx.translate(offsetX, offsetY);
+				ctx.scale(scale, scale);
+				
+				// 重绘所有方块
+				g_arr.forEach(xy => {
+					let cell = g_info[xy];
+					if (cell.open === 1) {
+						drawBlock(xy, g_color.open);
+						if (cell.mark === -1) {
+							drawBlock(xy, g_color.bomb);
+							markText(xy, mine[0]);
+						} else {
+							markText(xy, cell.mark);
+						}
+					} else {
+						drawBlock(xy, g_color.block);
+						if (cell.open === -1) {
+							markText(xy, mine[1]);
+						} else if (cell.open === -2) {
+							markText(xy, mine[2]);
+						}
 					}
 				});
+				
+				ctx.restore();
 			}
 		</script>
 	</body>
